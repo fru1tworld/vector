@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     future::ready,
     num::NonZeroUsize,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -1211,10 +1214,10 @@ impl Runner {
         let mut input_rx =
             super::ready_arrays::ReadyArrays::with_capacity(input_rx, READY_ARRAY_CAPACITY);
 
-        let mut in_flight =
-            super::in_flight_queue::InFlightQueue::new(self.preserve_ordering);
+        let mut in_flight = super::in_flight_queue::InFlightQueue::new(self.preserve_ordering);
         let mut shutting_down = false;
-        let mut blocked_completions: u64 = 0;
+        let completed_count = Arc::new(AtomicU64::new(0));
+        let mut yielded_since_last_record: u64 = 0;
 
         self.timer_tx.try_send_start_wait();
         loop {
@@ -1222,7 +1225,7 @@ impl Runner {
                 biased;
 
                 result = in_flight.next(), if !in_flight.is_empty() => {
-                    blocked_completions += 1;
+                    yielded_since_last_record += 1;
                     match result {
                         Some(Ok(mut outputs_buf)) => {
                             self.send_outputs(&mut outputs_buf).await
@@ -1233,12 +1236,13 @@ impl Runner {
                 }
 
                 input_arrays = input_rx.next(), if in_flight.len() < *TRANSFORM_CONCURRENCY_LIMIT && !shutting_down => {
+                    let blocked_completions = completed_count.fetch_sub(yielded_since_last_record, Ordering::Relaxed);
+                    yielded_since_last_record = 0;
                     histogram!(
                         "transform_concurrent_scheduling_pressure",
                         "component_id" => self.component_id.clone()
                     )
                     .record((blocked_completions as f64 / *TRANSFORM_CONCURRENCY_LIMIT as f64).min(1.0));
-                    blocked_completions = 0;
                     match input_arrays {
                         Some(input_arrays) => {
                             let mut len = 0;
@@ -1249,10 +1253,12 @@ impl Runner {
 
                             let mut t = self.transform.clone();
                             let mut outputs_buf = self.outputs.new_buf_with_capacity(len);
+                            let completed = Arc::clone(&completed_count);
                             let task = tokio::spawn(async move {
                                 for events in input_arrays {
                                     t.transform_all(events, &mut outputs_buf);
                                 }
+                                completed.fetch_add(1, Ordering::Relaxed);
                                 outputs_buf
                             }.in_current_span());
                             in_flight.push(task);
@@ -1265,7 +1271,6 @@ impl Runner {
                 }
 
                 else => {
-                    blocked_completions = 0;
                     if shutting_down {
                         break
                     }
