@@ -79,7 +79,6 @@ impl TopologyController {
             match api::GrpcServer::start(
                 self.topology.config(),
                 self.topology.watch(),
-                Arc::clone(&self.topology.running),
             )
             .await
             {

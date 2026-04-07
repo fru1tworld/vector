@@ -1,11 +1,8 @@
-use std::{
-    error::Error as StdError,
-    net::SocketAddr,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{error::Error as StdError, net::SocketAddr};
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server as TonicServer;
+use tonic_health::server::health_reporter;
 use vector_lib::tap::topology::WatchRx;
 
 use super::grpc::ObservabilityService;
@@ -25,11 +22,7 @@ impl GrpcServer {
     /// is dropped.
     ///
     /// Returns an error if the server fails to bind to the configured address.
-    pub async fn start(
-        config: &Config,
-        watch_rx: WatchRx,
-        running: Arc<AtomicBool>,
-    ) -> crate::Result<Self> {
+    pub async fn start(config: &Config, watch_rx: WatchRx) -> crate::Result<Self> {
         let addr = config.api.address.ok_or_else(|| {
             crate::Error::from("API address not configured in config.api.address")
         })?;
@@ -46,7 +39,16 @@ impl GrpcServer {
 
         info!("GRPC API server bound to {}.", actual_addr);
 
-        let service = ObservabilityService::new(watch_rx, running);
+        let service = ObservabilityService::new(watch_rx);
+
+        // Create the standard gRPC health service (grpc.health.v1.Health)
+        let (mut health_reporter, health_service) = health_reporter();
+        health_reporter
+            .set_service_status(
+                "vector.observability.v1.ObservabilityService",
+                tonic_health::ServingStatus::Serving,
+            )
+            .await;
 
         let (_shutdown, rx) = oneshot::channel();
 
@@ -59,10 +61,14 @@ impl GrpcServer {
                 .register_encoded_file_descriptor_set(
                     crate::proto::observability::FILE_DESCRIPTOR_SET,
                 )
+                .register_encoded_file_descriptor_set(
+                    tonic_health::pb::FILE_DESCRIPTOR_SET,
+                )
                 .build()
                 .expect("Failed to build reflection service");
 
             let result = TonicServer::builder()
+                .add_service(health_service)
                 .add_service(ObservabilityServer::new(service))
                 .add_service(reflection_service)
                 .serve_with_incoming_shutdown(incoming, async {
