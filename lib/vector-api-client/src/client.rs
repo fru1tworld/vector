@@ -1,7 +1,9 @@
 use http::Uri;
 use tokio_stream::{Stream, StreamExt};
 use tonic::transport::{Channel, Endpoint};
-use tonic_health::pb::{HealthCheckRequest, health_client::HealthClient};
+use tonic_health::pb::{
+    HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
+};
 
 use crate::{
     error::{Error, Result},
@@ -59,16 +61,25 @@ impl Client {
 
     // ========== Unary RPCs ==========
 
+    /// The fully-qualified service name used for gRPC health checks.
+    const HEALTH_SERVICE: &'static str = "vector.observability.v1.ObservabilityService";
+
     /// Check if the API server is healthy using the standard gRPC health check
     /// protocol (grpc.health.v1.Health/Check).
+    ///
+    /// Returns `Ok(())` if the service is `SERVING`, or an error otherwise.
     pub async fn health(&mut self) -> Result<()> {
         let channel = self.channel()?.clone();
         let mut health_client = HealthClient::new(channel);
-        health_client
+        let response = health_client
             .check(HealthCheckRequest {
-                service: String::new(),
+                service: Self::HEALTH_SERVICE.into(),
             })
             .await?;
+        let status = response.into_inner().status;
+        if status != ServingStatus::Serving as i32 {
+            return Err(Error::NotServing { status });
+        }
         Ok(())
     }
 
