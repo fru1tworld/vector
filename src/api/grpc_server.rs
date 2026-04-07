@@ -8,9 +8,6 @@ use vector_lib::tap::topology::WatchRx;
 use super::grpc::ObservabilityService;
 use crate::{config::Config, proto::observability::Server as ObservabilityServer};
 
-/// The fully-qualified gRPC service name registered with the health service.
-const OBSERVABILITY_SERVICE_NAME: &str = "vector.observability.v1.ObservabilityService";
-
 /// gRPC API server for Vector observability.
 pub struct GrpcServer {
     _shutdown: oneshot::Sender<()>,
@@ -44,14 +41,9 @@ impl GrpcServer {
 
         let service = ObservabilityService::new(watch_rx);
 
-        // Create the standard gRPC health service (grpc.health.v1.Health)
+        // Create the standard gRPC health service (grpc.health.v1.Health).
+        // The empty service ("") is registered as SERVING by default.
         let (mut health_reporter, health_service) = health_reporter();
-        health_reporter
-            .set_service_status(
-                OBSERVABILITY_SERVICE_NAME,
-                tonic_health::ServingStatus::Serving,
-            )
-            .await;
 
         let (_shutdown, rx) = oneshot::channel();
 
@@ -77,10 +69,7 @@ impl GrpcServer {
                     // Signal NOT_SERVING before the server stops accepting requests,
                     // so in-flight health probes see the transition during graceful drain.
                     health_reporter
-                        .set_service_status(
-                            OBSERVABILITY_SERVICE_NAME,
-                            tonic_health::ServingStatus::NotServing,
-                        )
+                        .set_service_status("", tonic_health::ServingStatus::NotServing)
                         .await;
                     info!("GRPC API server shutting down.");
                 })
