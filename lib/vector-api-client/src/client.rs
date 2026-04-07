@@ -8,6 +8,7 @@ use tonic_health::pb::{
 use crate::{
     error::{Error, Result},
     proto::{
+        GetAllocationTracingStatusRequest, GetAllocationTracingStatusResponse,
         GetComponentsRequest, GetComponentsResponse, GetMetaRequest, GetMetaResponse, MetricName,
         StreamComponentAllocatedBytesRequest, StreamComponentAllocatedBytesResponse,
         StreamComponentMetricsRequest, StreamComponentMetricsResponse, StreamHeartbeatRequest,
@@ -100,6 +101,17 @@ impl Client {
         let client = self.ensure_connected()?;
         let response = client
             .get_components(GetComponentsRequest { limit })
+            .await?;
+        Ok(response.into_inner())
+    }
+
+    /// Check whether allocation tracing is active on the connected Vector instance
+    pub async fn get_allocation_tracing_status(
+        &mut self,
+    ) -> Result<GetAllocationTracingStatusResponse> {
+        let client = self.ensure_connected()?;
+        let response = client
+            .get_allocation_tracing_status(GetAllocationTracingStatusRequest {})
             .await?;
         Ok(response.into_inner())
     }
